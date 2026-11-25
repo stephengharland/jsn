@@ -548,8 +548,35 @@ describe('decisiontables command wiring', () => {
 
     await commands.find((c) => c.command === 'delete <identifier>').handler({ identifier: id, force: true }, app);
 
-    assert.ok(calls.some(([table, query]) => table === 'sys_decision_multi_result_element' && query === `decision_table=${id}`));
+    assert.ok(calls.some(([table, query]) => table === 'sys_decision_multi_result_element' && query === `model=${id}`));
     assert.ok(!calls.some(([table]) => table === 'sn_decision_multi_result_element'));
+  });
+
+  it('counts only this table\'s answer elements in the delete guard', async () => {
+    const id = '0123456789abcdef0123456789abcdef';
+    const run = async (model) => {
+      const commands = [];
+      const yargs = { command: (definition) => { commands.push(definition); return yargs; } };
+      decisiontablesCmd((handler) => handler).builder(yargs);
+      const elements = [{ sys_id: 'fedcba9876543210fedcba9876543210', model, name: 'var__m_sys_decision_multi_result_element_x', element: 'u_answer' }];
+      let deletes = 0;
+      const app = { config: { profiles: {} }, requireInstance() {}, ok() {}, sdk: {
+        // Like the instance: a field the table lacks drops out of the query, so only model= filters.
+        list: async (table, params) => {
+          const query = params?.get('sysparm_query') || '';
+          if (table === 'sys_decision') return [{ sys_id: id, name: 'A' }];
+          if (table === 'sys_decision_multi_result_element') return query.startsWith('model=') ? elements.filter((row) => query === `model=${row.model}`) : elements;
+          return [];
+        },
+        delete: async () => { deletes += 1; },
+        get: async () => null,
+      } };
+      const outcome = await commands.find((c) => c.command === 'delete <identifier>').handler({ identifier: id, force: true }, app).then(() => 'deleted', (error) => error.message);
+      return { outcome, deletes };
+    };
+    const other = await run('abcdefabcdefabcdefabcdefabcdefab');
+    assert.deepEqual(other, { outcome: 'deleted', deletes: 1 });
+    assert.deepEqual(await run(id), { outcome: 'Cannot delete a decision table with related records. Remove all inputs, choices, answer elements, conditions, and questions first.', deletes: 0 });
   });
 
   it('requires delete confirmation after exact child guards pass', async () => {
